@@ -1,5 +1,6 @@
 import unicodedata
 from scipy.sparse.construct import rand
+from torch.functional import Tensor
 from tqdm import tqdm
 import re
 import numpy as np
@@ -12,6 +13,14 @@ from scipy.sparse import csc_matrix, csr_matrix
 import matplotlib.pyplot as plt
 import sklearn.metrics as skm
 from sklearn.naive_bayes import MultinomialNB
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import multiprocessing
+from gensim.models import Word2Vec, KeyedVectors
+import time
+from torch.autograd import Variable
+import torch.optim as optim
 
 leaveIn = ["srp\n", "hrv\n", "eng\n", "swe\n","bos\n", "pol\n", "nno\n"]
 #Choosing languages
@@ -110,8 +119,8 @@ if False:
     print(dispBow.confusion_matrix)
     plt.show()
 
-if True:
-    bigramWordVectorizer = CountVectorizer(analyzer="word", ngram_range=(2,2))
+if False:
+    bigramWordVectorizer = CountVectorizer(analyzer="word", ngram_range=(2,2),max_features=150000)
     X_bigram_raw = bigramWordVectorizer.fit_transform(x_dataset)
     bigramWords = bigramWordVectorizer.get_feature_names()
 
@@ -135,9 +144,9 @@ if True:
     nbWords.fit(X_train_words_sparse, y_train_words)
     y_pred_words = nbWords.predict(X_test_words_sparse)
     print("NB + 2gram Words tacnost: ",skm.accuracy_score(y_test_words,y_pred_words))
-    print("SMO + 2gram Words f1 score: ",skm.f1_score(y_test_words,y_pred_words,average="micro"))
-    print("SMO + 2gram Words precision: ",skm.precision_score(y_test_words,y_pred_words,average="micro"))
-    print("SMO + 2gram Words recall: ",skm.recall_score(y_test_words,y_pred_words,average="micro"))
+    print("NB + 2gram Words f1 score: ",skm.f1_score(y_test_words,y_pred_words,average="micro"))
+    print("NB + 2gram Words precision: ",skm.precision_score(y_test_words,y_pred_words,average="micro"))
+    print("NB + 2gram Words recall: ",skm.recall_score(y_test_words,y_pred_words,average="micro"))
 
     dispWords = skm.plot_confusion_matrix(nbWords,X_test_words_sparse,y_test_words,display_labels=leaveIn,cmap=plt.cm.Blues)
     print(dispWords.confusion_matrix)
@@ -169,10 +178,133 @@ if False:
     nbChars.fit(X_train_chars_sparse,y_train_chars)
     y_pred_chars = nbChars.predict(X_test_chars_sparse)
     print("NB + 3gram Chars tacnost: ",skm.accuracy_score(y_test_chars,y_pred_chars))
-    print("SMO + 3gram Chars f1 score: ",skm.f1_score(y_test_chars,y_pred_chars,average="macro"))
-    print("SMO + 3gram Chars precision: ",skm.precision_score(y_test_chars,y_pred_chars,average="macro"))
-    print("SMO + 3gram Chars recall: ",skm.recall_score(y_test_chars,y_pred_chars,average="macro"))
+    print("NB + 3gram Chars f1 score: ",skm.f1_score(y_test_chars,y_pred_chars,average="macro"))
+    print("NB + 3gram Chars precision: ",skm.precision_score(y_test_chars,y_pred_chars,average="macro"))
+    print("NB + 3gram Chars recall: ",skm.recall_score(y_test_chars,y_pred_chars,average="macro"))
 
     dispChars = skm.plot_confusion_matrix(nbChars,X_test_chars_sparse,y_test_chars,display_labels=leaveIn,cmap=plt.cm.Blues)
     print(dispChars.confusion_matrix)
     plt.show()
+
+if False:
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = nn.Conv2d(1, 32, 1)
+            self.conv2 = nn.Conv2d(32, 64, 1)
+            self.conv3 = nn.Conv2d(64, 128, 1)
+
+            x = torch.rand(10,100).view(-1,1,10,100)
+            self._to_linear = None
+            self.convs(x)
+
+            self.fc1 = nn.Linear(self._to_linear,512)
+            self.fc2 = nn.Linear(512,7)
+
+        def convs(self, x):
+            x = F.max_pool2d(F.relu(self.conv1(x)),(2,2))
+            x = F.max_pool2d(F.relu(self.conv2(x)),(2,2))
+            x = F.max_pool2d(F.relu(self.conv3(x)),(2,2))
+
+            if self._to_linear is None:
+                self._to_linear = x[0].shape[0]*x[0].shape[1]*x[0].shape[2]
+            return x
+
+        def forward(self, x):
+            x = self.convs(x)
+            x = x.view(-1,self._to_linear)
+            x = F.relu(self.fc1(x))
+            x = self.fc2(x)
+            return F.softmax(x,dim = 1)
+
+    def fwd_pass(net, x, y, optimizer, loss_function, train=False):
+        if train:
+            net.zero_grad()
+        outputs = net(x)
+        matches = [torch.argmax(i) == torch.argmax(j) for i, j in zip(outputs, y)]
+        acc = matches.count(True)/len(matches)
+        loss = loss_function(outputs, y)
+
+        if train:
+            loss.backward()
+            optimizer.step()
+        return acc, loss
+
+    def train(net, train_x, train_y, test_x, test_y, optimizer, loss_function, device, model_name):
+        BATCH_SIZE = 80
+        EPOCHS = 20
+        path = "models/"+model_name+".log"
+        with open(path, "a") as f:
+            for epoch in range(EPOCHS):
+                for i in tqdm(range(0, len(train_x), BATCH_SIZE)):
+                    batch_x = train_x[i:i+BATCH_SIZE].view(-1, 1, 10, 100).to(device)
+                    batch_y = train_y[i:i+BATCH_SIZE].to(device)
+
+                    acc, loss = fwd_pass(net, batch_x, batch_y, optimizer, loss_function, train=True)
+                    if i % 40 == 0:
+                        val_acc, val_loss = test(net, test_x, test_y, optimizer, loss_function, device, size=100)
+                        f.write(f"{model_name},{epoch},{round(time.time(),3)},{round(float(acc),2)},{round(float(loss),4)},{round(float(val_acc),2)},{round(float(val_loss),4)}\n")
+
+    def test(net, test_x, test_y, optimizer, loss_function, device, size=32):
+        random_start = np.random.randint(len(test_x)-size)
+        x, y = test_x[random_start:random_start+size], test_y[random_start:random_start+size]
+        with torch.no_grad():
+            val_acc, val_loss = fwd_pass(net, x.view(-1, 1, 10, 100).to(device), y.to(device), optimizer, loss_function)
+        return val_acc, val_loss
+
+    def sentance_to_wordlist(raw):
+        words = raw.split()
+        return words
+
+    x_sentances = []
+    for x in x_dataset:
+        if len(x) > 0:
+            x_sentances.append(sentance_to_wordlist(x))
+
+    lang2Vec = Word2Vec(sg=1,seed=1,workers=4,vector_size=100,min_count=3,window=5,sample=1e-3)
+    lang2Vec.build_vocab(x_sentances)
+
+
+    X_tensors_list = []
+    for x in x_sentances:
+        sentance = []
+        for word in x:
+            sentance.append(lang2Vec.wv.get_vector("word"))
+        sentancenp = np.array(sentance)
+        X_tensors_list.append(sentance)
+
+    for i in range(len(X_tensors_list)):
+        X_tensors_list[i] = X_tensors_list[i][:1]
+    
+
+    X_tensors = torch.Tensor([i for i in X_tensors_list])
+    print(len(X_tensors))
+
+    encoder = LabelBinarizer()
+    encoder.fit_transform(leaveIn)
+    y_hotencoded = encoder.transform(y_dataset)
+
+    y_tensors = torch.Tensor([i for i in y_hotencoded])
+    print(y_tensors.shape)
+
+    val_size = int(len(X_tensors)*0.2)
+    X_train_tensors = X_tensors[:-val_size]
+    y_train_tensors = y_tensors[:-val_size]
+
+    X_test_tensors = X_tensors[-val_size:]
+    y_test_tensors = y_tensors[-val_size:]
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        print("Running on GPU")
+    else:
+        device = torch.device("cpu")
+        print("Running on CPU")
+
+
+    net = Net().to(device)
+    optimizer = optim.Adam(net.parameters(), lr=0.001)
+    loss_function = nn.MSELoss()
+
+    MODEL_NAME ="please_work"
+    train(net,X_train_tensors,y_train_tensors,X_test_tensors,y_test_tensors,optimizer,loss_function,device,MODEL_NAME)
