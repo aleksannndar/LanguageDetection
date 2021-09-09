@@ -4,22 +4,19 @@ from torch.functional import Tensor
 from tqdm import tqdm
 import re
 import numpy as np
-from nltk import ngrams
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.model_selection import train_test_split
 from sklearn.svm import LinearSVC
-from scipy.sparse import csc_matrix, csr_matrix
+from scipy.sparse import csr_matrix
 import matplotlib.pyplot as plt
 import sklearn.metrics as skm
 from sklearn.naive_bayes import MultinomialNB
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import multiprocessing
 from gensim.models import Word2Vec, KeyedVectors
 import time
-from torch.autograd import Variable
 import torch.optim as optim
 
 leaveIn = ["srp\n", "hrv\n", "eng\n", "swe\n","bos\n", "pol\n", "nno\n"]
@@ -186,6 +183,7 @@ if False:
     print(dispChars.confusion_matrix)
     plt.show()
 
+# CODE BELOW NOT WORKING CURRENTLY
 if False:
     class Net(nn.Module):
         def __init__(self):
